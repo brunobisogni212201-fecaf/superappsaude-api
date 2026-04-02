@@ -1,0 +1,238 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x", "linux-glibc-libssl-3.0.x"]
+}
+
+// ---------------------------------------------------------------------
+// 1. USUÁRIOS (Nutricionista ou Paciente)
+// ---------------------------------------------------------------------
+model User {
+  id          String @id @default(uuid())
+  firebaseUid String @unique // Token gerado pelo Firebase Auth
+  email       String @unique
+  name        String
+  role        Role   @default(PATIENT)
+  onboardingCompleted Boolean @default(false)
+
+  // Vínculo entre Profissional e Cliente
+  professionalId String?
+  professional   User?   @relation("ProfessionalToPatient", fields: [professionalId], references: [id])
+  patients       User[]  @relation("ProfessionalToPatient")
+
+  // Gestão de Clínica
+  clinicId      String?
+  clinic        Clinic?  @relation("ClinicMembers", fields: [clinicId], references: [id])
+  ownedClinic   Clinic?  @relation("ClinicOwner")
+
+  // Registros que pertencem a esse paciente
+  plans             Plan[]             @relation("PatientPlans") 
+  plansCreated      Plan[]             @relation("ProfessionalPlans") 
+  logs              RoutineLog[]
+  medicalRecords    MedicalRecord[]    @relation("PatientMedicalRecords")
+  nutritionalInputs NutritionalInput[] @relation("PatientNutritionalInputs")
+  healthIndices     HealthIndex[]      @relation("PatientHealthIndices")
+  weightLogs        WeightLog[]        @relation("PatientWeights")
+  invitesSent       Invite[]           @relation("InvitesFromProfessional")
+  invitesReceived   Invite[]           @relation("InvitesToPatient")
+
+  // Assinatura (para Profissionais ou Clínicas)
+  subscription Subscription?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([firebaseUid])
+  @@index([email])
+  @@index([professionalId])
+  @@index([clinicId])
+}
+
+model Clinic {
+  id        String   @id @default(uuid())
+  name      String
+  cnpj      String?  @unique
+  address   String?
+  phone     String?
+  logoUrl   String?
+  
+  // O Gestor que criou a clínica
+  ownerId   String   @unique
+  owner     User     @relation("ClinicOwner", fields: [ownerId], references: [id])
+
+  // Membros da equipe (Nutricionistas, Recepcionistas, etc)
+  members   User[]   @relation("ClinicMembers")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum Role {
+  PATIENT
+  PROFESSIONAL
+  ADMIN
+  RECEPTIONIST // Novo cargo para equipe de clínica
+}
+
+// ---------------------------------------------------------------------
+// 2. PLANO SIMPLES (Hábitos, Exercícios ou Cardápios)
+// ---------------------------------------------------------------------
+model Plan {
+  id          String   @id @default(uuid())
+  title       String // Ex: "Hidratação Mínima" ou "Treino A"
+  description String?
+  target      Int? // Opcional (ex: 2 para 2 litros)
+  targetUnit  String? // Opcional (ex: "Litros")
+  type        PlanType @default(HABIT)
+
+  // A quem o plano pertence (Paciente) e quem o receitou (Nutricionista)
+  patientId String
+  patient   User   @relation("PatientPlans", fields: [patientId], references: [id])
+
+  professionalId String
+  professional   User   @relation("ProfessionalPlans", fields: [professionalId], references: [id])
+
+  logs RoutineLog[]
+
+  createdAt DateTime @default(now())
+}
+
+enum PlanType {
+  HABIT
+  EXERCISE
+  DIET
+}
+
+// ---------------------------------------------------------------------
+// 3. REGISTRA ROTINA NO APP / ADERÊNCIA 
+// ---------------------------------------------------------------------
+model RoutineLog {
+  id        String   @id @default(uuid())
+  planId    String
+  plan      Plan     @relation(fields: [planId], references: [id])
+  patientId String
+  patient   User     @relation(fields: [patientId], references: [id])
+  value     Float?
+  completed Boolean  @default(true)
+  loggedAt  DateTime @default(now())
+
+  @@index([planId])
+  @@index([patientId])
+  @@index([loggedAt])
+}
+
+// ---------------------------------------------------------------------
+// 4. INPUTS NUTRICIONAIS E DE PRONTUÁRIO (Mobile -> Médico)
+// ---------------------------------------------------------------------
+model MedicalRecord {
+  id            String   @id @default(uuid())
+  patientId     String
+  patient       User     @relation(fields: [patientId], references: [id], name: "PatientMedicalRecords")
+  content       String // O texto/json do prontuário ou histórico médico
+  clinicalNotes String? // Notas que apenas o médico vê
+  createdAt     DateTime @default(now())
+
+  @@index([patientId])
+  @@index([createdAt])
+}
+
+model NutritionalInput {
+  id           String   @id @default(uuid())
+  patientId    String
+  patient      User     @relation(fields: [patientId], references: [id], name: "PatientNutritionalInputs")
+  mealType     String // Café da Manhã, Almoço, etc.
+  description  String // O que comeu ou foto em base64/url
+  calories     Int?
+  registeredAt DateTime @default(now())
+
+  @@index([patientId])
+  @@index([registeredAt])
+}
+
+// ---------------------------------------------------------------------
+// 5. ÍNDICES DE SAÚDE E PESO (Calculadoras e Progressão)
+// ---------------------------------------------------------------------
+model HealthIndex {
+  id        String   @id @default(uuid())
+  patientId String
+  patient   User     @relation(fields: [patientId], references: [id], name: "PatientHealthIndices")
+  type      String // IMC, TMB, WATER_INTAKE
+  value     Float
+  unit      String?
+  createdAt DateTime @default(now())
+
+  @@index([patientId])
+  @@index([type])
+}
+
+model WeightLog {
+  id        String   @id @default(uuid())
+  patientId String
+  patient   User     @relation(fields: [patientId], references: [id], name: "PatientWeights")
+  weight    Float
+  createdAt DateTime @default(now())
+
+  @@index([patientId])
+  @@index([createdAt])
+}
+
+// ---------------------------------------------------------------------
+// 6. CONVITES E ASSINATURAS
+// ---------------------------------------------------------------------
+model Invite {
+  id             String       @id @default(uuid())
+  email          String
+  professionalId String
+  professional   User         @relation("InvitesFromProfessional", fields: [professionalId], references: [id])
+  patientId      String?
+  patient        User?        @relation("InvitesToPatient", fields: [patientId], references: [id])
+  status         InviteStatus @default(PENDING)
+  createdAt      DateTime     @default(now())
+
+  @@index([professionalId])
+  @@index([patientId])
+  @@index([email])
+}
+
+enum InviteStatus {
+  PENDING
+  ACCEPTED
+  REVOKED
+}
+
+model Subscription {
+  id        String             @id @default(uuid())
+  userId    String             @unique
+  user      User               @relation(fields: [userId], references: [id])
+  status    SubscriptionStatus
+  planType  String // BASIC, PREMIUM, PRO
+  expiresAt DateTime?
+  createdAt DateTime           @default(now())
+
+  @@index([userId])
+  @@index([status])
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  INCOMPLETE
+}
+
+// ---------------------------------------------------------------------
+// 7. BIBLIOTECA DE CALISTENIA / VÍDEOS
+// ---------------------------------------------------------------------
+model Video {
+  id          String   @id @default(uuid())
+  title       String // Ex: "Iniciação à Calistenia - Flexões"
+  url         String // Link CDN
+  durationSec Int?
+  category    String? // Calistenia, Nutrição, Alongamento
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+}
